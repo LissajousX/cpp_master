@@ -7,10 +7,11 @@ SRC_DIR="${SCRIPT_DIR}"
 
 usage() {
   cat <<'EOF'
-用法: ./run.sh [value|rvo|all]
+用法: ./run.sh [value|rvo|fwd|all]
   value  编译运行 value_categories 示例
   rvo    编译运行 rvo_nrvo 示例
-  all    编译运行两个示例（默认）
+  fwd    编译运行 forwarding 示例（转发引用/引用折叠）
+  all    编译运行全部示例（默认）
 EOF
 }
 
@@ -32,11 +33,17 @@ run_rvo() {
   echo "[RUN ] rvo_nrvo" && "${BUILD_DIR}/rvo_nrvo"
 }
 
+run_fwd() {
+  build "forwarding" "forwarding.cpp"
+  echo "[RUN ] forwarding" && "${BUILD_DIR}/forwarding"
+}
+
 choice=${1:-all}
 case "${choice}" in
   value) run_value ;;
   rvo)   run_rvo ;;
-  all)   run_value; echo; run_rvo ;;
+  fwd)   run_fwd ;;
+  all)   run_value; echo; run_rvo; echo; run_fwd ;;
   -h|--help) usage ;;
   *) usage; exit 1 ;;
 esac

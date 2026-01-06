@@ -24,6 +24,7 @@ compile_commands.json
 .vscode/
 .idea/
 *.code-workspace
+.windsurf/
 
 # OS noise
 .DS_Store
