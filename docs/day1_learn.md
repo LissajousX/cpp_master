@@ -142,6 +142,57 @@ auto call(F&& f, Args&&... args) -> decltype(auto) {
 - 只在确实需要“保留值类别”时用 `forward`，不要在普通非模板参数上滥用。  
 - 如果目标重载对 noexcept 有区分（如容器内部优化），保证移动构造/赋值是 noexcept 才更可能被选中。
 
+<details>
+<summary>常见陷阱详解</summary>
+下面逐条展开并给出小例子，便于面试回答：
+
+1) `{}` 初始化列表不能直接 forward  
+- 原因：`{1,2}` 不是对象，模板推导不会把它当成 `std::initializer_list` 自动 perfect forward。  
+- 现象：`make_forward<std::vector<int>>({1,2})` 可能编译失败或匹配不到期望构造。  
+- 对策示例：
+```cpp
+auto v1 = make_forward<std::vector<int>>(std::initializer_list<int>{1,2});
+auto v2 = make_forward<std::vector<int>>(std::vector<int>{1,2}); // 直接传对象
+```
+
+2) `auto&&` vs `const auto&`  
+- `auto&&`（在推导场景）是转发引用：左值传入→左值，右值传入→右值，保留移动机会。  
+- `const auto&` 把右值也绑成 const 左值引用，不再移动，但更稳。  
+- 示例对比：
+```cpp
+auto&& rr = std::string("hi");   // rr 是右值引用，可移动
+const auto& cr = std::string("hi"); // cr 是 const 左值引用，不会移动
+```
+选择策略：需要保留值类别/移动 → `auto&&`；只读且不关心移动 → `const auto&` 简单安全。
+
+3) 只在需要保留值类别时用 `forward`  
+- `forward` 仅在转发引用（推导得到的 `T&&`）里有意义，非模板形参或明确要右值的场景，用正常传参或 `std::move`。  
+- 反例：对一个普通左值参数用 `forward` 试图“强制右值”是错误的（会编译失败或语义不对）。  
+- 示例：
+```cpp
+template<class T>
+void wrap(T&& x) { use(std::forward<T>(x)); } // 对：转发引用
+void foo(std::string s) { use(std::move(s)); } // 这里用 move，forward 没意义
+```
+
+4) noexcept 影响容器重载选择  
+- 容器搬运元素时，若移动构造/赋值是 `noexcept`，更倾向走移动；否则可能回退到拷贝以保证异常安全。  
+- 示例：
+```cpp
+struct S {
+    S()=default;
+    S(const S&){ std::cout<<"copy\n"; }
+    S(S&&) noexcept { std::cout<<"move\n"; }
+};
+std::vector<S> v;
+v.emplace_back();
+v.push_back(S{}); // 如果移动 noexcept，扩容时会打印 move；否则可能打印 copy
+```
+- 对策：能保证安全时给移动构造/赋值加 `noexcept`，并保持成员也 noexcept。
+
+面试回答节奏可用模板：先定义/现象 → 原因 → 对策/示例。
+</details>
+
 5) 快速检测思路  
 - 写 `void f(int&); void f(int&&);`，在模板里转发，观察命中哪个重载，确认值类别保留正确。  
 - 配合 `std::is_lvalue_reference_v<decltype((expr))>` 检查推导结果。
@@ -208,3 +259,106 @@ int main() {
   - 例：`call(F&& f, Args&&... args) { return std::forward<F>(f)(std::forward<Args>(args)...); }`
 - 不是完美转发的：写死类型的 `int&&`、非模板参数，或不需要保留值类别的场景。
 </details>
+
+## std::move && std::forward
+解释要点：
+
+- `std::move(expr)`：
+  - 作用：把表达式无条件转成 xvalue（右值类别），提示“可以移走资源”。
+  - 不保证一定走移动：是否调用移动构造/赋值取决于目标类型是否有可用且（常见场景下）noexcept 的移动重载，否则可能回退到拷贝。
+  - 适用：你确定要把一个左值当右值交出去（通常是准备“失效”它）。
+
+- `std::forward<T>(expr)`：
+  - 作用：根据模板参数 T 的推导结果恢复原值类别：
+    - 如果 T 被推导为 `U&`，`forward<T>` 返回左值引用。
+    - 如果 T 被推导为 `U`，`forward<T>` 返回右值引用。
+  - 只在转发引用（推导得到的 `T&&`）场景使用，用来“原汁原味”传递调用者的参数。
+  - 适用：完美转发——编写泛型包装/工厂/回调时保留调用者的左/右值语义。
+
+和完美转发的关系：
+- 完美转发 = “推导得到的 `T&&`” + `std::forward<T>(arg)`。
+- `std::move` 不关心原值类别，强制右值；`std::forward` 按推导结果决定是否右值，从而避免把左值误当右值或把右值降格为左值。
+
+一句话区分：
+- 知道自己想强制右值用 `move`。
+- 想保留调用者原值类别、写泛型包装时用 `forward<T>` 配合转发引用。
+
+
+## Rule of Five/Six
+拷/移 5/6 函数（又叫 Rule of Five/Six）要点：
+
+包含哪些：
+1) 析构函数：`~T()`
+2) 拷贝构造：`T(const T&)`
+3) 拷贝赋值：`T& operator=(const T&)`
+4) 移动构造：`T(T&&)`
+5) 移动赋值：`T& operator=(T&&)`
+（若需要自定义默认构造，则加上默认构造，共 6 个）
+
+生成/抑制规则（常考）：
+- 你一旦自定义了拷贝构造或拷贝赋值，编译器就不再隐式生成移动构造/移动赋值，需要手写 `=default` 或自己实现，反之也成立。
+- 只有自定义析构，不会删除移动，但会删除隐式生成的拷贝赋值；同时移动可能被抑制（因拷贝未定义）。实践上，想要移动就显式写出移动或 `=default`。
+    >只自定义了析构时，编译器的行为：
+    > - 不会删除移动构造/移动赋值（它们依然有机会生成），但
+    > - 会删除隐式生成的拷贝赋值（这是规则：有用户析构 → 隐式拷贝赋值被删除，拷贝构造仍可生成）。
+    > - 因为拷贝赋值被删除，移动赋值的生成也可能被抑制（有些情况下编译器需要拷贝赋值可用才生成移动赋值）。
+- 无用户自定义的拷/移/析构时，编译器可自动生成拷/移。
+
+`=default` / `=delete` 用法：
+- `=default;`：显式要求编译器生成默认实现（可放在类内或类外）。
+- `=delete;`：显式禁用某个函数（常用来禁止拷贝或禁止从某类型转换）。
+
+推荐模式（资源管理类）：
+- 想要“可移动不可拷贝”：`File(const File&)=delete; File& operator=(const File&)=delete; File(File&&)=default; File& operator=(File&&)=default;`
+- 想要全功能：显式写出 5/6 个函数，移动构造/赋值最好标 `noexcept` 以利容器优化。
+
+示例（可移动不可拷）：
+```cpp
+struct Handle {
+    Handle() = default;
+    ~Handle() = default;
+
+    Handle(const Handle&) = delete;
+    Handle& operator=(const Handle&) = delete;
+
+    Handle(Handle&&) noexcept = default;
+    Handle& operator=(Handle&&) noexcept = default;
+};
+```
+
+示例（全功能，copy-and-swap 赋值）：
+```cpp
+struct Buffer {
+    Buffer() = default;
+    ~Buffer() = default;
+
+    Buffer(const Buffer& other) : data(other.data) {} // 简化示例
+    Buffer(Buffer&& other) noexcept : data(std::move(other.data)) {}
+
+    Buffer& operator=(Buffer other) noexcept { // 兼容拷/移
+        swap(other);
+        return *this;
+    }
+    void swap(Buffer& o) noexcept { data.swap(o.data); }
+
+private:
+    std::vector<int> data;
+};
+```
+
+面试回答模板：
+- 先列 5/6 个函数名称。
+- 说明自定义拷贝会抑制隐式移动，需要显式写出移动或 `=default`。
+- 说明 `=default`/`=delete` 的意图表达，移动最好 `noexcept`。
+
+## 面试题自测（Day1 主题）
+1) 区分并举例：lvalue / xvalue / prvalue。哪些引用可以绑定它们？  
+2) 解释引用折叠规则，并说明为何“推导得到的 `T&&`”可以同时接收左值/右值。  
+3) `std::move` 与 `std::forward` 的区别与使用场景；何时移动不会发生？  
+4) 说出 RVO 与 NRVO 的差别、C++17 的强制性 copy elision 范围，以及 NRVO 可能失效的例子。  
+5) 迭代器/引用失效：vector 在 push_back/emplace_back/erase/扩容时对引用迭代器的影响。  
+6) Rule of Five/Six：列出 5/6 个特殊成员函数，并说明自定义拷贝/移动/析构对隐式生成的影响。  
+7) 给出一个“可移动不可拷贝”的资源类写法，并解释为何移动要标 `noexcept`。  
+8) 给出一个完美转发工厂/调用包装的最小代码，说明 `{}` 初始化列表为何不能直接 forward。  
+9) 何时应返回值 vs 返回引用？结合 RVO/NRVO、安全性与封装性谈取舍。  
+10) 为什么“只自定义析构”会删除隐式拷贝赋值？如果仍想要移动/拷贝，该如何写？

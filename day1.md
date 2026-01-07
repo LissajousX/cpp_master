@@ -63,6 +63,77 @@ int main() {
 5) 观察：修改上面 Buffer 示例，在 `make_buffer` 中返回 `Buffer{8}` 与返回命名变量 `b`，对比输出，解释 NRVO/强制性 RVO 行为。  
 6) 迭代：将 Buffer 的赋值改为显式拷赋与移赋两个函数，对比编译器生成代码与输出顺序，体会 copy-and-swap 的好处/代价。
 
+### 练习示例参考
+1) `std::move` vs `std::forward`
+```cpp
+struct X {
+    X(){}; X(const X&){std::cout<<"copy\n";} X(X&&){std::cout<<"move\n";}
+};
+X make() { X x; return x; }
+template<class T> void pass(T&& t){ X y = std::forward<T>(t); } // forward 保留原值类别
+int main(){
+    X a;
+    X b = std::move(a); // move -> 尝试移动
+    pass(a);            // forward 左值 -> copy
+    pass(make());       // forward 右值 -> move
+}
+```
+
+2) 自定义拷贝/赋值/析构对移动生成的影响
+```cpp
+struct Y {
+    Y()=default;
+    Y(const Y&)=default;        // 定义拷贝
+    Y& operator=(const Y&)=default;
+    ~Y()=default;
+    // 有自定义拷贝则不会隐式生成移动，需要手写：
+    Y(Y&&)=default;
+    Y& operator=(Y&&)=default;
+};
+```
+
+3) `FILE*` RAII（拷/移 5 函数）
+```cpp
+struct File {
+    FILE* f{};
+    explicit File(const char* p){ f=fopen(p,"w"); std::puts("ctor"); }
+    ~File(){ if(f){ fclose(f); std::puts("dtor"); } }
+    File(const File&)=delete;
+    File& operator=(const File&)=delete;
+    File(File&& o) noexcept : f(o.f){ o.f=nullptr; std::puts("move"); }
+    File& operator=(File&& o) noexcept{
+        if(this!=&o){ if(f) fclose(f); f=o.f; o.f=nullptr; std::puts("move assign"); }
+        return *this;
+    }
+};
+```
+
+4) 完美转发工厂 `make_wrapper`
+```cpp
+template<class T, class... Args>
+T make_wrapper(Args&&... args){
+    return T(std::forward<Args>(args)...);
+}
+// 使用：auto obj = make_wrapper<std::string>(3, 'a'); // "aaa"
+```
+
+5) RVO/NRVO 对比
+```cpp
+Buffer f1(){ return Buffer{8}; } // C++17 强制性消除拷/移
+Buffer f2(){ Buffer b(8); return b; } // NRVO：通常无拷/移，非强制
+```
+
+6) 显式拷赋/移赋对比
+```cpp
+struct Z {
+    Z()=default;
+    Z(const Z&){ std::cout<<"copy\n"; }
+    Z& operator=(const Z&){ std::cout<<"copy assign\n"; return *this; }
+    Z(Z&&){ std::cout<<"move\n"; }
+    Z& operator=(Z&&){ std::cout<<"move assign\n"; return *this; }
+};
+```
+
 ### 自测要点（回答并举例）
 - 左值/右值/xvalue/prvalue 定义与差异？  
 - 引用折叠规则背下来；`T&&` 的模板形参在传入左值/右值时各会折叠成什么？  
