@@ -63,3 +63,28 @@
 - `T&`：只能左值，保留底层 const。
 - `const T&`：通吃左/右值，只读。
 - `推导得到的 T&&`：转发引用，折叠规则“有 & 则 &，双 && 留 &&”。
+
+
+## 顶层const和底层const
+顶层 const / 底层 const 区分的是“const 约束作用在对象本身，还是作用在指向的对象”：
+
+- 顶层 const：限定对象自身不可改。比如 `const int x;`，或 `int* const p;`（p 本身不能改指向）。
+- 底层 const：限定被指向/引用的目标不可改。比如  
+  - `const int* p;`（p 可变，*p 只读），  
+  - `int const* p;`（同上），  
+  - `const int& r = x;`（引用的目标只读），  
+  - `int* const* pp;` 中最内层指向的 `int` 可变，但 `pp` 是指向“顶层 const 指针”的指针，`pp` 自身可改指向。
+
+与类型推导的关系（按值形参会去掉顶层 const）：
+```cpp
+const int ci = 0;
+auto a = ci;        // a: int（顶层 const 被去掉）
+const auto b = ci;  // b: const int（给变量再加 const）
+int* const p = nullptr;
+auto p1 = p;        // p1: int*  （顶层 const 去掉）
+auto q = &ci;       // q: const int* （底层 const 保留）
+```
+
+记忆：
+- “贴在名字上的 const”是顶层（对象自身），如 `int* const p`。
+- “贴在指向的类型上的 const”是底层（指向内容），如 `const int* p`、`const T&`。
