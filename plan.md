@@ -25,13 +25,13 @@ Day4：模板与类型推导（C++11→17）
 - 理论：模板实参推导、auto/decltype/decltype(auto)、别名模板、C++17 CTAD。
 - 实践：类型打印 helper；用 CTAD 简化自定义容器/包装类构造。
 
-Day5：SFINAE / enable_if（无 concepts）+ OOP 基础复盘
-- 理论：SFINAE、std::void_t、std::enable_if，重载决策，ADL；OOP 三大特性、虚函数、override/final、菱形继承与虚继承成本。
-- 实践：实现“可加法”检测函数（void_t/enable_if 两版）；写一个带虚继承的菱形例子，打印 sizeof 和调用虚函数验证布局/成本。
+Day5：SFINAE / enable_if（无 concepts）+ 模板重载机制
+- 理论：SFINAE、std::void_t、std::enable_if，重载决策，ADL（参数相关查找），结合简单 traits（has_size / is_addable 等）。
+- 实践：实现“可加法”检测函数（void_t/enable_if 两版）；实现几个基于 SFINAE 的小 traits（如 has_size / has_value_type），并用重载决议+ADL 分析调用结果。
 
-Day6：容器与迭代器失效 + OOP 设计
-- 理论：vector/list/deque/map/unordered_map 复杂度与迭代器失效；emplace vs push；接口/实现分离、pimpl 目的与代价。
-- 实践：整理失效表；简易基准（插入/查找）；为一个类做 pimpl 雏形，检查编译/链接。
+Day6：OOP 基础复盘 + 设计强化 + 容器与迭代器失效
+- 理论：OOP 三大特性、虚函数表与 override/final、菱形继承与虚继承成本；OOP 设计原则与取舍（组合 vs 继承、接口/实现分离、pimpl 目的与代价），配套整理 vector/list/deque/map/unordered_map 的复杂度与迭代器失效；emplace vs push。
+- 实践：写一个带虚继承的菱形例子，打印 sizeof 和调用虚函数验证布局/成本；为一个中等复杂度的类层次做 OOP 设计草图（接口、继承/组合、虚函数/override/final 取舍），并实现一个具体类的 pimpl 雏形；同时整理容器迭代器失效表并写小基准（插入/查找）。
 
 Day7：复盘 + 小项目 1（LRU 缓存，强调拷/移与异常安全）
 - 上午：错题回顾。
