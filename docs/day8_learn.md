@@ -964,3 +964,190 @@ void f() {
 
 基本就已经超过大量普通 C++ 开发者了。
 
+# 死锁
+
+下面把“死锁”这块展开讲清楚，尽量结合 C++ 代码来理解。
+
+---
+
+## 1. 死锁到底是什么？
+
+经典定义：  
+多个线程**互相等待对方持有的资源（锁）**，形成闭环，所有等待都无法被满足，程序卡死不动。
+
+在 C++ 里，最典型的是多个 `mutex` 交叉加锁：
+
+```cpp
+std::mutex m1, m2;
+
+void t1() {
+    std::lock_guard<std::mutex> lk1(m1);
+    std::this_thread::sleep_for(10ms);
+    std::lock_guard<std::mutex> lk2(m2); // 等 m2
+}
+
+void t2() {
+    std::lock_guard<std::mutex> lk2(m2);
+    std::this_thread::sleep_for(10ms);
+    std::lock_guard<std::mutex> lk1(m1); // 等 m1
+}
+```
+
+- `t1` 持有 `m1` 等 `m2`  
+- `t2` 持有 `m2` 等 `m1`  
+→ 两边都等不到，死锁。
+
+---
+
+## 2. 死锁的“四个必要条件”（经典 OS 理论）
+
+1. **互斥**：资源一次只能被一个线程占用（锁就是如此）。  
+2. **保持并等待**：线程已经持有资源，还在继续申请新的资源。  
+3. **不可剥夺**：资源不能被强行抢走，只能线程自己释放。  
+4. **循环等待**：存在环形等待链，如 A 等 B，B 等 C，C 等 A。
+
+死锁发生 = 这 4 条同时成立。  
+避免思路也就是想办法**破坏其中一条**，实践中最常用的是打破“循环等待”。
+
+---
+
+## 3. 几种常见死锁模式
+
+### 3.1 多把锁加锁顺序不一致
+
+上面例子就是：  
+- `t1`：`m1 -> m2`  
+- `t2`：`m2 -> m1`  
+
+解决：**全局统一加锁顺序**，例如规定：`&m1 < &m2` 则先锁 m1 再锁 m2：
+
+```cpp
+void lock_two(std::mutex& a, std::mutex& b) {
+    if (&a < &b) {
+        std::lock(a, b);
+    } else {
+        std::lock(b, a);
+    }
+}
+
+void t1() {
+    std::lock_guard<std::mutex> lk1(m1, std::adopt_lock);
+    std::lock_guard<std::mutex> lk2(m2, std::adopt_lock);
+}
+```
+
+更简单：直接用 `std::scoped_lock`：
+
+```cpp
+void t1() {
+    std::scoped_lock lk(m1, m2); // 内部用 std::lock，避免死锁
+}
+```
+
+只要**所有地方都用同样的方式同时拿两把锁，就不会死锁**。
+
+---
+
+### 3.2 锁 + 条件变量：忘记在持锁时等待
+
+错误写法（伪代码）：
+
+```cpp
+std::mutex m;
+std::condition_variable cv;
+bool ready = false;
+
+void consumer() {
+    std::lock_guard<std::mutex> lk(m);
+    while (!ready) {
+        cv.wait(lk); // 错：需要 unique_lock，且 wait 内部会解锁再锁
+    }
+}
+```
+
+正确模式：
+
+```cpp
+void consumer() {
+    std::unique_lock<std::mutex> lk(m);
+    cv.wait(lk, [] { return ready; });
+}
+```
+
+- `wait` 在睡眠前会**解锁 mutex**，被唤醒后再重新加锁。  
+- 如果你用 `lock_guard` 或自己写 `while (cond) {}` 不释放锁，就会把生产者也堵住，形成类似死锁的卡死。
+
+---
+
+### 3.3 锁里再调用可能“反向拿锁”的回调
+
+比如：
+
+```cpp
+std::mutex m;
+std::function<void()> callback;
+
+void set_callback(std::function<void()> cb) {
+    std::lock_guard<std::mutex> lk(m);
+    callback = std::move(cb);
+}
+
+void notify() {
+    std::lock_guard<std::mutex> lk(m);
+    if (callback) callback(); // 回调里如果再尝试拿 m，会死锁
+}
+```
+
+- 回调可能来自别的模块/线程，里面如果也试图 `lock_guard<std::mutex> lk(m);`，就死锁自己。
+- 解决：**在锁外调用回调**：
+
+```cpp
+void notify() {
+    std::function<void()> cb;
+    {
+        std::lock_guard<std::mutex> lk(m);
+        cb = callback; // 拷贝出来
+    }
+    if (cb) cb(); // 锁外调用
+}
+```
+
+---
+
+## 4. 怎么系统性避免死锁？
+
+可以总结成几条工程实践：
+
+1. **能只用一把锁就别用两把锁**  
+   - 尽量保持锁粒度简单；多把锁就要考虑顺序问题。
+
+2. **必须多锁时，统一顺序**  
+   - 约定：`A < B < C`，所有地方都按这个顺序拿锁。  
+   - 或者直接用 `std::lock(A, B)` / `std::scoped_lock(A, B)`。
+
+3. **锁内逻辑要短，不要在锁内做 I/O / 阻塞操作**  
+   - 网络、磁盘、`sleep`、`join` 之类都不要在持锁时做，容易造成长时间占锁，别人等你 → 更易引入复杂死锁。
+
+4. **避免在持锁状态下调用“未知代码”**（回调、虚函数、外部模块接口）  
+   - 很多库专门强调：**回调可能被在持锁状态下调用，请不要在回调里调用回库函数**，就是怕死锁。
+
+5. **条件变量要配合 `unique_lock` 和循环**  
+   - 永远使用：
+     ```cpp
+     std::unique_lock<std::mutex> lk(m);
+     cv.wait(lk, [] { return 条件; });
+     ```
+   - 不要自己 busy-wait，不要 `lock_guard` 配合 `wait`。
+
+---
+
+## 5. 面试时可以怎么讲死锁？
+
+你可以用这样一段话概括（1 分钟左右）：
+
+> 死锁本质上是多个线程互相等待对方持有的锁，满足互斥、保持并等待、不可剥夺、循环等待这四个条件。  
+> 在 C++ 里最常见的是多把 mutex 加锁顺序不一致，比如线程 A 拿 m1 再拿 m2，线程 B 拿 m2 再拿 m1。  
+> 工程上我会统一加锁顺序，或者使用 `std::lock` / `std::scoped_lock` 一次性拿多把锁；  
+> 同时避免在持锁状态下调用未知回调、做阻塞 I/O 或长时间计算。  
+> 条件变量配合 `unique_lock` 使用，`wait` 会在睡眠前释放锁，避免自己把生产者堵住造成“伪死锁”。
+
